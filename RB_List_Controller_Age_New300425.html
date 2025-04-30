@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Robot Map Viewer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    .container { display: flex; flex-direction: row; height: 100vh; }
+    .left-panel { width: 50%; overflow-y: auto; padding: 20px; box-sizing: border-box; }
+    .right-panel { width: 50%; position: relative; }
+    #map { height: 100%; width: 100%; }
+    #saveMapBtn, #saveChartBtn { position: absolute; top: 10px; right: 10px; z-index: 10; margin-left: 10px; }
+    #saveChartBtn { right: 130px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+    select, input, button { margin: 4px; padding: 4px; }
+    #selectedArea { margin-top: 10px; font-weight: bold; }
+    #robotSummary { font-size: 16px; color: #007BFF; font-weight: bold; }
+    #robotSummary span { color: #007BFF; }
+  </style>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBwX8K9beHAcHPJjHXxLtvl1YTV5KPvAt8&callback=initMap" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <div class="left-panel">
+    <h2>Robot Viewer</h2>
+    <input type="file" id="fileInput" accept=".json"><br><br>
+    <label>Company:</label>
+    <input type="text" id="companySearch" placeholder="Search company" style="width: 100%;">
+    <select id="companyFilter"><option value="">All</option></select><br>
+    <label>Controller:</label>
+    <input type="text" id="controllerSearch" placeholder="Search controller" style="width: 100%;">
+    <select id="controllerFilter"><option value="">All</option></select><br>
+    <label>Robot Count:</label>
+    <select id="countCondition">
+      <option value="none">All</option>
+      <option value="gt">Greater than</option>
+      <option value="lt">Less than</option>
+    </select>
+    <input type="number" id="robotCount" value="1">
+    <label>Zoom:</label>
+    <input type="number" id="zoomLevel" value="10"><br>
+    <label>Robot Age (Min-Max):</label>
+    <input type="number" id="minAge" placeholder="Min Age" value="0" style="width: 80px;">
+    <input type="number" id="maxAge" placeholder="Max Age" value="30" style="width: 80px;">
+    <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+      <button onclick="updateFilteredMarkers()">Update Map</button>
+      <label><input type="checkbox" id="option1"> แสดงแผนที่</label><br>
+      <div id="robotSummary">
+        Total Robot: <span id="totalRobotCount">0</span> |
+        Robot: <span id="filteredRobotCount">0</span> |
+        Customers: <span id="customerCount">0</span> |
+        <span id="filteredPercent">0</span>%
+      </div>
+    </div>
+    <button onclick="exportSummaryToCSV()">Export CSV</button>
+    <a href="#heading-3"><button>Go to Summary Table </button></a>
+    <div id="selectedArea">Selected Controller: <span id="controllerText"></span></div>
+    <table id="dataTable">
+      <thead>
+        <tr>
+          <th>Customer</th>
+          <th>Controller</th>
+          <th>Robot Type</th>
+          <th>Order No.</th>
+          <th>Application</th>
+          <th>Robot Age</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <h3 id="heading-3">Summary Table</h3>
+    <button id="saveChartBtn" onclick="saveChartImage()">Save Summary</button>
+    <button onclick="exportSummaryToCSV()">Export CSV</button>
+    <div id="summaryChart"></div>
+  </div>
+  <div class="right-panel">
+    <button id="saveMapBtn" onclick="saveMapImage()">Save Map Image</button>
+    <div id="map"></div>
+  </div>
+</div>
+
+<script>
+  let map;
+  const data = [];
+  const geocodeCache = {};
+  let markers = [];
+
+function exportSummaryToCSV() {
+  const table = document.querySelector("#summaryChart table");
+  if (!table) {
+    alert("Summary table not found.");
+    return;
+  }
+  let csv = "";
+  const rows = table.querySelectorAll("tr");
+  rows.forEach(row => {
+    const cols = row.querySelectorAll("td, th");
+    const rowText = Array.from(cols).map(col => `"${col.innerText.trim()}"`).join(",");
+    csv += rowText + "\n";
+  });
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "robot_summary.csv";
+  link.click();
+}
+
+  function initMap() {
+    map = new google.maps.Map(document.getElementById("map"), {
+      zoom: 6,
+      center: { lat: 13.736717, lng: 100.523186 }
+    });
+  }
+
+  document.getElementById("fileInput").addEventListener("change", function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      try {
+        const json = JSON.parse(event.target.result);
+        data.length = 0;
+        data.push(...json);
+        populateFilters();
+      } catch (err) {
+        alert("Invalid JSON file");
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  document.getElementById("companySearch").addEventListener("input", populateFilters);
+  document.getElementById("controllerSearch").addEventListener("input", populateFilters);
+
+  function populateFilters() {
+    const companyFilter = document.getElementById("companyFilter");
+    const controllerFilter = document.getElementById("controllerFilter");
+    const companySearch = document.getElementById("companySearch").value.toLowerCase();
+    const controllerSearch = document.getElementById("controllerSearch").value.toLowerCase();
+
+    const selectedCompany = companyFilter.value;
+    const selectedController = controllerFilter.value;
+
+    companyFilter.innerHTML = `<option value="">All</option>`;
+    controllerFilter.innerHTML = `<option value="">All</option>`;
+
+    const companies = [...new Set(data.map(d => d["Customer name "]).filter(Boolean))].sort();
+    const controllers = [...new Set(data.map(d => d["Controller"]).filter(Boolean))].sort();
+
+    companies.filter(c => c.toLowerCase().includes(companySearch)).forEach(company => {
+      const opt = document.createElement("option");
+      opt.value = company;
+      opt.textContent = company;
+      companyFilter.appendChild(opt);
+    });
+
+    controllers.filter(c => c.toLowerCase().includes(controllerSearch)).forEach(controller => {
+      const opt = document.createElement("option");
+      opt.value = controller;
+      opt.textContent = controller;
+      controllerFilter.appendChild(opt);
+    });
+
+    if ([...companyFilter.options].some(o => o.value === selectedCompany)) companyFilter.value = selectedCompany;
+    if ([...controllerFilter.options].some(o => o.value === selectedController)) controllerFilter.value = selectedController;
+  }
+
+  function clearMarkers() {
+    markers.forEach(m => m.setMap(null));
+    markers = [];
+  }
+
+  async function updateFilteredMarkers() {
+    const company = document.getElementById("companyFilter").value;
+    const controller = document.getElementById("controllerFilter").value;
+    const minAge = parseInt(document.getElementById("minAge").value, 10);
+    const maxAge = parseInt(document.getElementById("maxAge").value, 10);
+    const countCondition = document.getElementById("countCondition").value;
+    const robotCount = parseInt(document.getElementById("robotCount").value, 10);
+    const option1 = document.getElementById('option1').checked;
+
+    const tbody = document.querySelector("#dataTable tbody");
+    tbody.innerHTML = "";
+    clearMarkers();
+
+    const currentYear = new Date().getFullYear();
+
+    let filtered = data.filter(item => {
+      if (company && item["Customer name "] !== company) return false;
+      if (controller && item["Controller"] !== controller) return false;
+      const year = parseInt(item["Year"], 10);
+      if (!isNaN(minAge) && !isNaN(year) && currentYear - year < minAge) return false;
+      if (!isNaN(maxAge) && !isNaN(year) && currentYear - year > maxAge) return false;
+      return true;
+    });
+
+    const customerCounts = {};
+    filtered.forEach(item => {
+      const name = item["Customer name "];
+      customerCounts[name] = (customerCounts[name] || 0) + 1;
+    });
+
+    if (countCondition !== "none" && !isNaN(robotCount)) {
+      filtered = filtered.filter(item => {
+        const name = item["Customer name "];
+        return countCondition === "gt" ? customerCounts[name] > robotCount : customerCounts[name] < robotCount;
+      });
+    }
+
+    // ✅ Update controller text summary
+    document.getElementById("controllerText").textContent = controller || "All";
+
+    // ✅ Update table below
+    filtered.forEach(item => {
+      const year = parseInt(item["Year"], 10);
+      const robotAge = !isNaN(year) ? (currentYear - year) : "-";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${item["Customer name "] || "-"}</td>
+        <td>${item["Controller"] || "-"}</td>
+        <td>${item["Robot type"] || "-"}</td>
+        <td>${item["Order No.\nS/#"] || "-"}</td>
+        <td>${item["System \napplication"] || "-"}</td>
+        <td>${robotAge}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    // ✅ Continue with existing chart + marker code ...
+    
+    const summary = {};
+    filtered.forEach(item => {
+      const customer = item["Customer name "] || "Unknown";
+      const robotType = item["Robot type"] || "Unknown";
+      if (!summary[customer]) summary[customer] = {};
+      summary[customer][robotType] = (summary[customer][robotType] || 0) + 1;
+    });
+
+    const summaryChart = document.getElementById("summaryChart");
+    summaryChart.innerHTML = "";
+    const table = document.createElement("table");
+    table.innerHTML = `
+      <thead><tr><th>Customer</th><th>Robot Model</th><th>Quantity</th><th>Total</th></tr></thead>
+      <tbody>
+        ${Object.entries(summary).map(([customer, models]) =>
+          Object.entries(models).map(([model, qty], idx) => `
+            <tr>
+              <td>${idx === 0 ? customer : ""}</td>
+              <td>${model}</td>
+              <td>${qty}</td>
+              <td>${idx === 0 ? Object.values(models).reduce((a, b) => a + b, 0) : ""}</td>
+            </tr>`).join("")
+        ).join("")}
+      </tbody>
+    `;
+    summaryChart.appendChild(table);
+
+    const uniqueCustomers = new Set(filtered.map(item => item["Customer name "])).size;
+    document.getElementById("totalRobotCount").textContent = data.length;
+    document.getElementById("filteredRobotCount").textContent = filtered.length;
+    document.getElementById("customerCount").textContent = uniqueCustomers;
+    document.getElementById("filteredPercent").textContent = data.length > 0 ? ((filtered.length / data.length) * 100).toFixed(1) : 0;
+
+    const bounds = new google.maps.LatLngBounds();
+    if (option1 == true){
+    for (const customer in summary) {
+      const robotModels = summary[customer];
+      const robotList = Object.entries(robotModels).map(([model, qty]) => `${model}: ${qty}`).join("<br>");
+      const total = Object.values(robotModels).reduce((a, b) => a + b, 0);
+
+      let color = "red";
+      if (total > 30) color = "green";
+      else if (total > 20) color = "blue";
+      else if (total > 10) color = "yellow";
+
+      const iconUrl = `https://maps.google.com/mapfiles/ms/icons/${color}-dot.png`;
+
+      const geocoder = new google.maps.Geocoder();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      geocoder.geocode({ address: customer + ", Thailand" }, (results, status) => {
+        if (status === 'OK' && results[0]) {
+          const loc = results[0].geometry.location;
+          const marker = new google.maps.Marker({
+            position: loc,
+            map,
+            title: customer,
+            icon: {
+              url: iconUrl,
+              scaledSize: new google.maps.Size(40, 40)
+            }
+          });
+          const info = new google.maps.InfoWindow({ content: `<strong>${customer}</strong><br>${robotList}` });
+          marker.addListener("mouseover", () => info.open(map, marker));
+          marker.addListener("mouseout", () => info.close());
+          markers.push(marker);
+          bounds.extend(loc);
+        }
+      });
+    }
+   }else{
+	clearMarkers();
+   }
+  }
+</script>
+</body>
+</html>
+
