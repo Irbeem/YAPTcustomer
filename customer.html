@@ -113,22 +113,16 @@ function exportSummaryToCSV() {
       center: { lat: 13.736717, lng: 100.523186 }
     });
   }
-
-  document.getElementById("fileInput").addEventListener("change", function(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function(event) {
-      try {
-        const json = JSON.parse(event.target.result);
+    // ✅ Load data automatically from GitHub on page load
+  document.addEventListener("DOMContentLoaded", () => {
+    fetch("https://raw.githubusercontent.com/Irbeem/YAPTcustomer/main/data.json")
+      .then(response => response.json())
+      .then(json => {
         data.length = 0;
         data.push(...json);
         populateFilters();
-      } catch (err) {
-        alert("Invalid JSON file");
-      }
-    };
-    reader.readAsText(file);
+      })
+      .catch(err => alert("Failed to load data from GitHub: " + err));
   });
 
   document.getElementById("companySearch").addEventListener("input", populateFilters);
@@ -166,7 +160,7 @@ function exportSummaryToCSV() {
     if ([...companyFilter.options].some(o => o.value === selectedCompany)) companyFilter.value = selectedCompany;
     if ([...controllerFilter.options].some(o => o.value === selectedController)) controllerFilter.value = selectedController;
   }
-
+	
   function clearMarkers() {
     markers.forEach(m => m.setMap(null));
     markers = [];
